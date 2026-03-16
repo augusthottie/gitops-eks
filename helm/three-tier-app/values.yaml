@@ -4,12 +4,12 @@
 app:
   name: gitops-api
   image:
-    repository: "780276530675.dkr.ecr.us-east-1.amazonaws.com/gitops-api"  # Set to ECR URL after terraform apply
+    repository: "780276530675.dkr.ecr.us-east-1.amazonaws.com/gitops-api"
     tag: "latest"
     pullPolicy: Always
   replicas: 2
   port: 3000
-  version: "1.0.0"
+  version: "1.1.0"
   resources:
     requests:
       cpu: 128m
