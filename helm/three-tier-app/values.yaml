@@ -1,0 +1,72 @@
+# =============================================================================
+# Application
+# =============================================================================
+app:
+  name: gitops-api
+  image:
+    repository: "780276530675.dkr.ecr.us-east-1.amazonaws.com/gitops-api"  # Set to ECR URL after terraform apply
+    tag: "latest"
+    pullPolicy: Always
+  replicas: 2
+  port: 3000
+  version: "1.0.0"
+  resources:
+    requests:
+      cpu: 128m
+      memory: 256Mi
+    limits:
+      cpu: 256m
+      memory: 512Mi
+
+# =============================================================================
+# PostgreSQL (in-cluster)
+# =============================================================================
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  port: 5432
+  database: appdb
+  user: appuser
+  password: pgpass123
+  storage: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+
+# =============================================================================
+# Redis (in-cluster)
+# =============================================================================
+redis:
+  enabled: true
+  image: redis:7-alpine
+  port: 6379
+  storage: 512Mi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# =============================================================================
+# Ingress (AWS ALB)
+# =============================================================================
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+
+# =============================================================================
+# Namespace
+# =============================================================================
+namespace: three-tier

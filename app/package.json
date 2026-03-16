@@ -1,0 +1,16 @@
+{
+  "name": "gitops-api",
+  "version": "1.0.0",
+  "description": "Lightweight API for GitOps EKS deployment",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "bun run src/server.js",
+    "dev": "bun --watch src/server.js",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "pg": "^8.13.0",
+    "ioredis": "^5.4.0"
+  }
+}

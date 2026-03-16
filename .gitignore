@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs & temp
+*.log
+*.tmp
+.cache/
+
+# Build output
+dist/
+build/
+*.egg-info/
