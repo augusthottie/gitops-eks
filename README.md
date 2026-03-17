@@ -1,6 +1,6 @@
 # GitOps on EKS with ArgoCD and Helm
 
-A fully GitOps-driven Kubernetes deployment on Amazon EKS. Push to `main` and ArgoCD automatically syncs a Helm chart deploying a 3-tier application (API + PostgreSQL + Redis) to the cluster. No `kubectl apply`, no manual deployments — Git is the single source of truth.
+A fully GitOps-driven Kubernetes deployment on Amazon EKS. Push to `main` and ArgoCD automatically syncs a Helm chart deploying a 3-tier application (API + PostgreSQL + Redis) to the cluster. No `kubectl apply`, no manual deployments, Git is the single source of truth.
 
 ![Architecture](./docs/architecture.png)
 
