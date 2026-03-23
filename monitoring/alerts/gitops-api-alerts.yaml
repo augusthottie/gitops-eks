@@ -1,0 +1,148 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gitops-api-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # ==========================================================================
+    # API Health
+    # ==========================================================================
+    - name: api-health
+      rules:
+        - alert: APIHighErrorRate
+          expr: |
+            (
+              sum(rate(http_requests_total{status=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total[5m]))
+            ) > 0.05
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API error rate above 5%"
+            description: "{{ $value | humanizePercentage }} of requests are returning 5xx errors."
+
+        - alert: APIHighLatency
+          expr: |
+            histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+            > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "API p95 latency above 1 second"
+            description: "95th percentile latency is {{ $value }}s."
+
+        - alert: APIDown
+          expr: up{job="gitops-api"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API pod is down"
+            description: "Prometheus cannot reach the gitops-api metrics endpoint."
+
+    # ==========================================================================
+    # Database
+    # ==========================================================================
+    - name: database-health
+      rules:
+        - alert: DatabaseHighErrorRate
+          expr: |
+            (
+              sum(rate(db_queries_total{status="error"}[5m]))
+              /
+              sum(rate(db_queries_total[5m]))
+            ) > 0.01
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Database error rate above 1%"
+            description: "{{ $value | humanizePercentage }} of DB queries are failing."
+
+        - alert: DatabaseSlowQueries
+          expr: |
+            histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le))
+            > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Database p95 query time above 500ms"
+            description: "95th percentile query duration is {{ $value }}s."
+
+        - alert: DatabaseConnectionPoolExhausted
+          expr: db_active_connections > 8
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Database connection pool nearly exhausted"
+            description: "{{ $value }} of 10 connections are active."
+
+    # ==========================================================================
+    # Cache
+    # ==========================================================================
+    - name: cache-health
+      rules:
+        - alert: CacheHighMissRate
+          expr: |
+            (
+              sum(rate(cache_operations_total{result="miss"}[5m]))
+              /
+              (sum(rate(cache_operations_total{result="hit"}[5m])) + sum(rate(cache_operations_total{result="miss"}[5m])))
+            ) > 0.8
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Cache miss rate above 80%"
+            description: "{{ $value | humanizePercentage }} of cache lookups are misses. Redis may be down or data is not being cached."
+
+    # ==========================================================================
+    # Pod Health
+    # ==========================================================================
+    - name: pod-health
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="three-tier"}[15m]) > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} is crash-looping"
+            description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} has restarted {{ $value }} times in 15 minutes."
+
+        - alert: PodHighMemory
+          expr: |
+            (
+              container_memory_working_set_bytes{namespace="three-tier"}
+              /
+              container_spec_memory_limit_bytes{namespace="three-tier"}
+            ) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.pod }} memory usage above 85%"
+            description: "Container {{ $labels.container }} is using {{ $value | humanizePercentage }} of its memory limit."
+
+        - alert: PodHighCPU
+          expr: |
+            (
+              sum(rate(container_cpu_usage_seconds_total{namespace="three-tier"}[5m])) by (pod)
+              /
+              sum(container_spec_cpu_quota{namespace="three-tier"} / container_spec_cpu_period{namespace="three-tier"}) by (pod)
+            ) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.pod }} CPU usage above 85%"
+            description: "Pod is using {{ $value | humanizePercentage }} of its CPU limit."

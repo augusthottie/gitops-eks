@@ -1,0 +1,198 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-custom-dashboards
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  gitops-api-dashboard.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "Request Rate (req/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total[5m])) by (route)",
+              "legendFormat": "{{ route }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "Error Rate (%)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+              "legendFormat": "Error %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "P95 Latency",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
+              "legendFormat": "{{ route }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "Requests by Status",
+          "type": "piechart",
+          "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "expr": "sum(increase(http_requests_total[1h])) by (status)",
+              "legendFormat": "{{ status }}"
+            }
+          ]
+        },
+        {
+          "title": "Cache Hit/Miss",
+          "type": "piechart",
+          "gridPos": { "h": 8, "w": 6, "x": 6, "y": 8 },
+          "targets": [
+            {
+              "expr": "sum(increase(cache_operations_total{operation=\"get\"}[1h])) by (result)",
+              "legendFormat": "{{ result }}"
+            }
+          ]
+        },
+        {
+          "title": "DB Query Duration (p95)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation))",
+              "legendFormat": "{{ operation }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "DB Active Connections",
+          "type": "gauge",
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+          "targets": [
+            {
+              "expr": "db_active_connections",
+              "legendFormat": "Active"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "min": 0,
+              "max": 10,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 6 },
+                  { "color": "red", "value": 8 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "title": "DB Queries per Second",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum(rate(db_queries_total[5m])) by (operation)",
+              "legendFormat": "{{ operation }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "Pod Memory Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+          "targets": [
+            {
+              "expr": "container_memory_working_set_bytes{namespace=\"three-tier\", container!=\"\"}",
+              "legendFormat": "{{ pod }} / {{ container }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 }
+            }
+          }
+        },
+        {
+          "title": "Pod CPU Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"three-tier\", container!=\"\"}[5m])) by (pod)",
+              "legendFormat": "{{ pod }}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": { "fillOpacity": 20, "lineWidth": 2 }
+            }
+          }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["custom", "gitops-api"],
+      "templating": { "list": [] },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "GitOps API Dashboard",
+      "uid": "gitops-api-dashboard"
+    }

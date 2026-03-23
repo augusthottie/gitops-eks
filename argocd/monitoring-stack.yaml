@@ -1,0 +1,97 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring-stack
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "65.1.0"
+    helm:
+      valueFiles: []
+      values: |
+        prometheus:
+          prometheusSpec:
+            retention: 7d
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                cpu: 500m
+                memory: 1Gi
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+            additionalScrapeConfigs:
+              - job_name: "gitops-api"
+                kubernetes_sd_configs:
+                  - role: pod
+                    namespaces:
+                      names:
+                        - three-tier
+                relabel_configs:
+                  - source_labels: [__meta_kubernetes_pod_label_app]
+                    regex: gitops-api
+                    action: keep
+                  - source_labels: [__meta_kubernetes_pod_ip]
+                    target_label: __address__
+                    replacement: "$1:3000"
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    target_label: pod
+                  - source_labels: [__meta_kubernetes_namespace]
+                    target_label: namespace
+
+        grafana:
+          adminPassword: "grafana-admin-2026"
+          service:
+            type: LoadBalancer
+            annotations:
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+          dashboardProviders:
+            dashboardproviders.yaml:
+              apiVersion: 1
+              providers:
+                - name: "custom"
+                  orgId: 1
+                  folder: "Custom"
+                  type: file
+                  disableDeletion: false
+                  editable: true
+                  options:
+                    path: /var/lib/grafana/dashboards/custom
+          dashboardsConfigMaps:
+            custom: grafana-custom-dashboards
+
+        alertmanager:
+          alertmanagerSpec:
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+
+        defaultRules:
+          create: true
+          rules:
+            etcd: false
+            kubeSchedulerAlerting: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

@@ -1,7 +1,7 @@
 {
   "name": "gitops-api",
-  "version": "1.0.0",
-  "description": "Lightweight API for GitOps EKS deployment",
+  "version": "2.0.0",
+  "description": "GitOps API with Prometheus metrics",
   "main": "src/server.js",
   "scripts": {
     "start": "bun run src/server.js",
@@ -11,6 +11,7 @@
   "dependencies": {
     "express": "^4.21.0",
     "pg": "^8.13.0",
-    "ioredis": "^5.4.0"
+    "ioredis": "^5.4.0",
+    "prom-client": "^15.1.0"
   }
 }

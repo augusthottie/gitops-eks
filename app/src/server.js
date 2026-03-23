@@ -8,7 +8,8 @@ async function start() {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`GitOps API running on port ${PORT} (via Bun)`);
       console.log(`Pod: ${process.env.HOSTNAME || "local"}`);
-      console.log(`Version: ${process.env.APP_VERSION || "1.0.0"}`);
+      console.log(`Version: ${process.env.APP_VERSION || "2.0.0"}`);
+      console.log(`Metrics: http://localhost:${PORT}/metrics`);
     });
   } catch (error) {
     console.error("Failed to start:", error.message);
