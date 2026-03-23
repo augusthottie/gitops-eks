@@ -11,7 +11,7 @@ spec:
     matchLabels:
       app: {{ .Values.app.name }}
   template:
-  metadata:
+    metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
