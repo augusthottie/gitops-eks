@@ -279,6 +279,45 @@ kubectl delete application monitoring-custom monitoring-stack three-tier-app -n 
 cd terraform/ && terraform destroy
 ```
 
+## Troubleshooting Tear Down
+
+`terraform destroy` often fails because Kubernetes-created resources (ALBs, security groups, ENIs) still exist in the VPC. Terraform didn't create them so it can't delete them, but they block VPC deletion.
+
+**Fix: delete Kubernetes resources first, then destroy infrastructure.**
+```bash
+# Delete ArgoCD apps (this removes ALBs, services, pods)
+kubectl delete application monitoring-custom monitoring-stack three-tier-app -n argocd
+
+# Wait 2 minutes for resources to terminate, then destroy
+terraform destroy
+```
+
+**If the cluster is already gone** and `kubectl` can't connect:
+```bash
+# Find and delete leftover ALBs
+aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?VpcId=='YOUR_VPC_ID'].LoadBalancerArn" --output text
+
+# Delete each one individually
+aws elbv2 delete-load-balancer --load-balancer-arn "ARN_HERE"
+
+# Wait 90 seconds, then delete orphaned security groups
+aws ec2 describe-security-groups \
+  --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
+  --query "SecurityGroups[?GroupName!='default'].GroupId" --output text | \
+  xargs -n1 aws ec2 delete-security-group --group-id
+
+# Retry
+terraform destroy
+```
+
+**If the VPC still won't delete**, check for lingering ENIs:
+```bash
+aws ec2 describe-network-interfaces \
+  --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
+  --query "NetworkInterfaces[*].{ID:NetworkInterfaceId,Status:Status}" --output table
+```
+
 ## Lessons Learned
 
 **ServiceMonitor > additionalScrapeConfigs.** The Prometheus operator manages config through CRDs. A ServiceMonitor with label selectors is the Kubernetes-native approach and works immediately. Raw scrape configs were unreliable.
