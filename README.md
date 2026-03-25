@@ -1,45 +1,50 @@
-# GitOps on EKS with ArgoCD and Helm
+# GitOps on EKS with ArgoCD, Helm, and Full Observability
 
-A fully GitOps-driven Kubernetes deployment on Amazon EKS. Push to `main` and ArgoCD automatically syncs a Helm chart deploying a 3-tier application (API + PostgreSQL + Redis) to the cluster. No `kubectl apply`, no manual deployments, Git is the single source of truth.
+A GitOps-driven Kubernetes deployment on Amazon EKS with a complete observability stack. Push to `main` and ArgoCD automatically syncs everything, the application, the monitoring stack, custom dashboards, and alerting rules. Git is the single source of truth.
 
 ![Architecture](./docs/architecture.png)
 
 ## What This Project Demonstrates
 
-- **GitOps workflow**: ArgoCD watches a GitHub repo and auto-syncs changes to EKS
-- **Helm chart authoring**: Custom chart with Deployment, StatefulSet, Services, Ingress, ConfigMap, and Secrets
+- **GitOps workflow**: ArgoCD watches GitHub and auto-syncs changes to EKS
+- **Helm chart authoring**: Custom chart with Deployments, StatefulSets, Services, Ingress, ConfigMap, Secrets
 - **EKS cluster provisioning**: Terraform modules for VPC + EKS with managed node groups
 - **Kubernetes-native databases**: PostgreSQL (StatefulSet + PVC) and Redis running as pods
-- **AWS Load Balancer Controller**: Ingress resource automatically provisions an internet-facing ALB
-- **IRSA (IAM Roles for Service Accounts)**: Secure, pod-level AWS permissions via OIDC
+- **AWS integrations**: Load Balancer Controller (ALB from Ingress), EBS CSI Driver, ECR, IRSA
+- **Application instrumentation**: Custom Prometheus metrics (counters, histograms, gauges)
+- **Grafana dashboards**: 9-panel dashboard covering HTTP, database, cache, and infrastructure metrics
+- **Custom alerting**: 9 PrometheusRule alerts for API health, database performance, cache efficiency, and pod stability
+- **Monitoring as code**: Full kube-prometheus-stack deployed and managed via GitOps
 
 ## Architecture
 
 ```
 Developer → git push → GitHub repo
                           ↓ (polls every 3m)
-                       ArgoCD (auto-sync)
+                       ArgoCD (auto-sync + self-heal)
                           ↓ (helm sync)
-┌─────────────────────────────────────────────────────┐
-│  EKS Cluster (2x t3.medium managed nodes)           │
-│                                                      │
-│  ┌─── namespace: three-tier ──────────────────────┐ │
-│  │                                                 │ │
-│  │  Ingress (ALB) → gitops-api (2 replicas)       │ │
-│  │                       ↓              ↓          │ │
-│  │               PostgreSQL (PVC)    Redis          │ │
-│  │                                                 │ │
-│  └─────────────────────────────────────────────────┘ │
-│                                                      │
-│  ┌─── namespace: argocd ──────────┐                 │
-│  │  ArgoCD Server (UI + API)      │                 │
-│  └────────────────────────────────┘                 │
-│                                                      │
-│  ┌─── namespace: kube-system ─────┐                 │
-│  │  AWS LB Controller             │                 │
-│  │  EBS CSI Driver                │                 │
-│  └────────────────────────────────┘                 │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  EKS Cluster (2x t3.medium managed nodes)                │
+│                                                          │
+│  ┌── namespace: three-tier ───────────────────────────┐  │
+│  │  Ingress (ALB) → gitops-api (2 replicas, /metrics) │  │
+│  │                       ↓              ↓              │  │
+│  │               PostgreSQL (PVC)    Redis              │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌── namespace: monitoring ───────────────────────────┐  │
+│  │  Prometheus ──ServiceMonitor──→ gitops-api          │  │
+│  │      │       ──scrapes──→ Node Exporter             │  │
+│  │      │       ──scrapes──→ kube-state-metrics        │  │
+│  │      ↓                                              │  │
+│  │  Alertmanager → Email notifications                 │  │
+│  │  Grafana (9-panel custom dashboard)                 │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌── namespace: argocd ──────────────────────────────┐   │
+│  │  ArgoCD Server (manages all deployments via Git)   │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 
 Developer → docker push → ECR (pulled by EKS nodes)
 Users → HTTP :80 → ALB → gitops-api pods :3000
@@ -47,14 +52,16 @@ Users → HTTP :80 → ALB → gitops-api pods :3000
 
 ## GitOps Workflow
 
-1. Developer changes `helm/three-tier-app/values.yaml` (e.g., bumps version, changes replicas)
+1. Developer changes Helm values, app code, monitoring configs, or alert rules
 2. Pushes to `main` branch on GitHub
-3. ArgoCD detects the change within 3 minutes (polling interval)
-4. ArgoCD renders the Helm chart with new values
-5. ArgoCD applies the diff to the EKS cluster
-6. Kubernetes rolls out updated pods with zero downtime
+3. ArgoCD detects the change within 3 minutes
+4. ArgoCD syncs the diff to the EKS cluster
+5. Kubernetes rolls out updated pods with zero downtime
 
-No CI/CD pipeline needed for deployments. Git history *is* the deployment history.
+Three ArgoCD applications manage the entire stack:
+- `three-tier-app`: the application (Helm chart)
+- `monitoring-stack`: kube-prometheus-stack (Helm chart from upstream)
+- `monitoring-custom`: custom alerts and Grafana dashboards (raw manifests)
 
 ## Tech Stack
 
@@ -62,52 +69,112 @@ No CI/CD pipeline needed for deployments. Git history *is* the deployment histor
 |-----------|-----------|---------|
 | Cluster | Amazon EKS 1.29 | Managed control plane |
 | Compute | Managed Node Group | 2x t3.medium in private subnets |
-| GitOps | ArgoCD | Auto-sync + self-heal enabled |
-| Packaging | Helm 3 | Custom chart with 8 templates |
-| Ingress | AWS Load Balancer Controller | ALB from Ingress resource |
-| Application | Bun + Express | Notes API with CRUD + caching |
+| GitOps | ArgoCD | Auto-sync + self-heal |
+| Packaging | Helm 3 | Custom chart, 8 templates |
+| Ingress | AWS LB Controller | ALB from Ingress resource |
+| Application | Bun + Express | Notes API with CRUD + caching + /metrics |
 | Database | PostgreSQL 16 | StatefulSet with 1Gi EBS PVC |
 | Cache | Redis 7 | Deployment with LRU eviction |
+| Metrics | Prometheus + prom-client | ServiceMonitor, 7 custom metrics |
+| Dashboards | Grafana | 9-panel custom dashboard |
+| Alerting | Alertmanager + PrometheusRules | 9 custom alerts |
+| Node metrics | Node Exporter | CPU, memory, disk, network |
+| K8s metrics | kube-state-metrics | Pod status, deployments, replicas |
 | Storage | EBS CSI Driver | Dynamic PV provisioning |
 | Registry | Amazon ECR | Container image scanning |
 | IaC | Terraform | 2 modules (VPC + EKS), 27 resources |
 | Auth | IRSA + OIDC | Pod-level IAM via service accounts |
+
+## Grafana Dashboard
+
+![Dashboard](./docs/grafana-dashboard.png)
+
+9 panels covering every layer of the application:
+
+| Panel | What It Shows |
+|-------|---------------|
+| Request Rate | Requests per second by route (/, /health, /info, /notes) |
+| Error Rate | Percentage of 5xx responses over time |
+| P95 Latency | 95th percentile response time by route |
+| Requests by Status | Pie chart: 200, 201, 404, 503 distribution |
+| Cache Hit/Miss | Pie chart: Redis cache hits vs misses |
+| DB Query Duration | p95 latency for inserts vs selects |
+| DB Active Connections | Gauge per pod (0-10 scale) |
+| DB Queries/s | Insert and select operations per second |
+| Pod Memory + CPU | Resource usage per pod and container |
+
+## Custom Metrics
+
+The API exposes `/metrics` scraped by Prometheus every 15 seconds via ServiceMonitor:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_requests_total` | Counter | Requests by method, route, status |
+| `http_request_duration_seconds` | Histogram | Latency with p50/p95/p99 buckets |
+| `db_queries_total` | Counter | Queries by operation and status |
+| `db_query_duration_seconds` | Histogram | Query latency by operation |
+| `db_active_connections` | Gauge | Active connections in the pool |
+| `cache_operations_total` | Counter | Cache ops by type and result |
+| `app_info` | Gauge | Version, pod name, runtime |
+
+## Alert Rules
+
+| Alert | Severity | Condition |
+|-------|----------|-----------|
+| APIHighErrorRate | Critical | 5xx rate > 5% for 2 min |
+| APIHighLatency | Warning | p95 > 1s for 5 min |
+| APIDown | Critical | Metrics endpoint unreachable for 1 min |
+| DatabaseHighErrorRate | Critical | Query error rate > 1% for 2 min |
+| DatabaseSlowQueries | Warning | p95 query time > 500ms for 5 min |
+| DatabaseConnectionPoolExhausted | Warning | Active connections > 8/10 for 2 min |
+| CacheHighMissRate | Warning | Miss rate > 80% for 10 min |
+| PodCrashLooping | Critical | > 3 restarts in 15 min |
+| PodHighMemory | Warning | Memory > 85% of limit for 5 min |
 
 ## Project Structure
 
 ```
 ├── app/
 │   ├── src/
-│   │   ├── app.js          # Express routes, CRUD, health, caching
-│   │   └── server.js       # Entry point with DB init
-│   ├── Dockerfile           # Bun alpine, amd64
-│   ├── package.json
-│   └── bun.lockb
+│   │   ├── app.js          # Express routes with metric instrumentation
+│   │   ├── server.js        # Entry point with DB init
+│   │   └── metrics.js       # prom-client: counters, histograms, gauges, middleware
+│   ├── Dockerfile
+│   └── package.json
 ├── helm/
 │   └── three-tier-app/
 │       ├── Chart.yaml
-│       ├── values.yaml      # All configurable values
+│       ├── values.yaml
 │       └── templates/
 │           ├── namespace.yaml
 │           ├── configmap.yaml
 │           ├── secret.yaml
-│           ├── deployment.yaml   # API (2 replicas)
-│           ├── service.yaml      # ClusterIP for API
+│           ├── deployment.yaml   # 2 replicas, configmap checksum annotation
+│           ├── service.yaml      # Named port for ServiceMonitor
 │           ├── ingress.yaml      # ALB via AWS LB Controller
 │           ├── postgres.yaml     # StatefulSet + headless Service
 │           └── redis.yaml        # Deployment + Service
+├── monitoring/
+│   ├── servicemonitor.yaml                    # Prometheus ServiceMonitor
+│   ├── alerts/
+│   │   └── gitops-api-alerts.yaml             # 9 PrometheusRule alerts
+│   └── dashboards/
+│       └── grafana-dashboard-configmap.yaml    # 9-panel dashboard as ConfigMap
 ├── argocd/
-│   └── application.yaml     # ArgoCD app pointing to helm/ in this repo
+│   ├── application.yaml          # Three-tier app
+│   ├── monitoring-stack.yaml     # kube-prometheus-stack
+│   └── monitoring-custom.yaml    # Custom alerts + dashboards
 ├── terraform/
-│   ├── main.tf              # Provider, ECR, module wiring
+│   ├── main.tf
 │   ├── variables.tf
 │   ├── outputs.tf
 │   ├── terraform.tfvars
 │   └── modules/
 │       ├── vpc/             # VPC, subnets, NAT GW, K8s tags
-│       └── eks/             # Cluster, node group, OIDC, IRSA for LB controller
+│       └── eks/             # Cluster, node group, OIDC, IRSA
 └── docs/
-    └── architecture.png
+    ├── architecture.png
+    └── grafana-dashboard.png
 ```
 
 ## API Endpoints
@@ -117,60 +184,31 @@ No CI/CD pipeline needed for deployments. Git history *is* the deployment histor
 | `GET /` | Welcome message with pod name and version |
 | `GET /health` | DB + Redis connectivity check |
 | `GET /info` | Pod name, version, uptime, runtime |
+| `GET /metrics` | Prometheus metrics (scraped by ServiceMonitor) |
 | `GET /notes` | List notes (cached in Redis 30s) |
-| `POST /notes` | Create note `{ title, content }`, invalidates cache |
-| `DELETE /notes/:id` | Delete note, invalidates cache |
-
-The `pod` field in every response shows which pod served the request, useful for demonstrating load balancing across replicas.
+| `POST /notes` | Create note `{ title, content }` — invalidates cache |
+| `DELETE /notes/:id` | Delete note — invalidates cache |
 
 ## Deploying from Scratch
 
 ### Prerequisites
 
-- AWS CLI configured
-- Terraform >= 1.5.0
-- kubectl
-- Helm 3
-- Docker
-- eksctl (for EBS CSI driver)
+- AWS CLI, kubectl, Helm 3, Docker, eksctl, Terraform >= 1.5.0
 
 ### Step 1: Provision Infrastructure
 
 ```bash
 cd terraform/
-terraform init
-terraform apply
-# Takes ~15-20 minutes
-```
-
-### Step 2: Configure kubectl
-
-```bash
+terraform init && terraform apply
 aws eks update-kubeconfig --region us-east-1 --name gitops-eks
-kubectl get nodes  # Should show 2 Ready nodes
 ```
 
-### Step 3: Build and Push Docker Image
-
-```bash
-cd app/
-bun install
-docker build --platform linux/amd64 -t gitops-api .
-
-# Push to ECR
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 780276530675.dkr.ecr.us-east-1.amazonaws.com
-docker tag gitops-api:latest $(cd ../terraform && terraform output -raw ecr_repository_url):latest
-docker push $(cd ../terraform && terraform output -raw ecr_repository_url):latest
-```
-
-### Step 4: Install EBS CSI Driver
+### Step 2: Install EBS CSI Driver
 
 ```bash
 eksctl create iamserviceaccount \
-  --name ebs-csi-controller-sa \
-  --namespace kube-system \
-  --cluster gitops-eks \
-  --role-name gitops-eks-ebs-csi-role \
+  --name ebs-csi-controller-sa --namespace kube-system \
+  --cluster gitops-eks --role-name gitops-eks-ebs-csi-role \
   --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
   --approve
 
@@ -179,78 +217,83 @@ aws eks create-addon --cluster-name gitops-eks --addon-name aws-ebs-csi-driver \
   --resolve-conflicts OVERWRITE
 ```
 
-### Step 5: Install AWS Load Balancer Controller
+### Step 3: Install AWS Load Balancer Controller
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.5/cert-manager.yaml
 kubectl wait --for=condition=Available --timeout=120s -n cert-manager deployment/cert-manager-webhook
 
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update
+helm repo add eks https://aws.github.io/eks-charts && helm repo update
 helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system \
-  --set clusterName=gitops-eks \
+  -n kube-system --set clusterName=gitops-eks \
   --set serviceAccount.create=true \
   --set "serviceAccount.annotations.eks\.amazonaws\.io/role-arn=$(cd terraform && terraform output -raw lb_controller_role_arn)"
 ```
 
-### Step 6: Install ArgoCD
+### Step 4: Install ArgoCD
 
 ```bash
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml --server-side=true --force-conflicts
 kubectl wait --for=condition=Available --timeout=300s -n argocd deployment/argocd-server
-
-# Get admin password
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-echo ""
-
-# Access UI
-kubectl port-forward svc/argocd-server -n argocd 8080:443
-# Open https://localhost:8080
 ```
 
-### Step 7: Deploy via ArgoCD
+### Step 5: Build and Push App
 
-Update `helm/three-tier-app/values.yaml` with your ECR repository URL, push to GitHub, then:
+```bash
+cd app/ && bun install
+docker build --platform linux/amd64 -t gitops-api .
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com
+docker tag gitops-api:latest $(cd ../terraform && terraform output -raw ecr_repository_url):latest
+docker push $(cd ../terraform && terraform output -raw ecr_repository_url):latest
+```
+
+### Step 6: Deploy Everything
 
 ```bash
 kubectl apply -f argocd/application.yaml
+kubectl apply -f argocd/monitoring-stack.yaml
+kubectl apply -f argocd/monitoring-custom.yaml
 ```
 
-ArgoCD will sync the Helm chart and deploy all resources. Watch:
+### Step 7: Access
 
 ```bash
-kubectl get pods -n three-tier -w
+# App
+ALB=$(kubectl get ingress -n three-tier -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}')
+curl $ALB/health
+
+# Grafana
+kubectl port-forward svc/monitoring-stack-grafana -n monitoring 3000:80
+# http://localhost:3000 — admin / grafana-admin-2026
+
+# ArgoCD
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+# https://localhost:8080
 ```
 
 ### Tear Down
 
 ```bash
-# Delete ArgoCD app first
-kubectl delete application three-tier-app -n argocd
-
-# Delete EBS CSI addon
-aws eks delete-addon --cluster-name gitops-eks --addon-name aws-ebs-csi-driver
-
-# Destroy infrastructure
-cd terraform/
-terraform destroy
+kubectl delete application monitoring-custom monitoring-stack three-tier-app -n argocd
+cd terraform/ && terraform destroy
 ```
 
 ## Lessons Learned
 
-**EKS doesn't include the EBS CSI driver by default.** StatefulSets with PersistentVolumeClaims will hang in `Pending` forever without it. Install the `aws-ebs-csi-driver` addon with a proper IAM role before deploying anything that needs persistent storage.
+**ServiceMonitor > additionalScrapeConfigs.** The Prometheus operator manages config through CRDs. A ServiceMonitor with label selectors is the Kubernetes-native approach and works immediately. Raw scrape configs were unreliable.
 
-**IRSA requires correct service account annotations.** The AWS Load Balancer Controller used the node role instead of its IRSA role because the service account annotation wasn't applied correctly. If you see "AccessDenied" errors referencing the node role, check `kubectl get sa -o yaml` for the annotation.
+**Services need named ports for ServiceMonitor.** `port: 80` isn't enough, you need `name: http, port: 80`. The ServiceMonitor references ports by name, and without it Prometheus silently ignores the target.
 
-**Build Docker images for linux/amd64.** Apple Silicon Macs build ARM images by default. EKS nodes run x86_64. Always use `--platform linux/amd64` or you get `exec format error` with zero useful context.
+**EBS CSI Driver OIDC must match the current cluster.** Destroying and recreating an EKS cluster changes the OIDC provider URL. IAM roles from the old cluster fail with `Not authorized to perform sts:AssumeRoleWithWebIdentity`. Delete and recreate the IAM service account.
 
-**ConfigMap changes don't restart pods.** ArgoCD will sync the ConfigMap, but pods reading from it via `envFrom` won't pick up changes until restarted. Add a checksum annotation to the deployment template for automatic restarts.
+**IRSA annotations can go blank after Helm reinstall.** Always verify with `kubectl get sa -o yaml`. Use `kubectl annotate --overwrite` to fix.
 
-**ArgoCD CRDs are too large for client-side apply.** Use `--server-side=true --force-conflicts` when installing ArgoCD manifests, or the `applicationsets` CRD will fail with a size limit error.
+**ArgoCD CRDs require server-side apply.** Use `--server-side=true --force-conflicts` when installing ArgoCD manifests.
 
-**EBS CSI addon conflicts with eksctl service accounts.** If `eksctl create iamserviceaccount` runs before the addon, use `--resolve-conflicts OVERWRITE` when creating the addon to override the conflicting labels.
+**Helm indentation errors show as Unknown sync.** A single wrong indent causes ArgoCD to show `Unknown` status with a `ComparisonError`. Check `kubectl describe application` for the actual error.
+
+**ConfigMap changes don't restart pods.** Add a checksum annotation to the deployment template so pods roll out automatically when config changes.
 
 ## Cost Considerations
 
@@ -260,8 +303,19 @@ terraform destroy
 | 2x t3.medium nodes | $60 |
 | NAT Gateway | $32 |
 | ALB (via Ingress) | $16 |
-| EBS (1Gi PVC) | $0.10 |
-| ECR | Minimal |
-| **Total** | **~$181/month** |
+| Prometheus EBS (10Gi) | $1 |
+| Postgres EBS (1Gi) | $0.10 |
+| Monitoring pods | Minimal (existing nodes) |
+| **Total** | **~$182/month** |
 
-Use `terraform destroy` when not actively working. The EKS control plane is the biggest cost.
+Use `terraform destroy` when not actively working.
+
+## Future Improvements
+
+- [ ] GitHub Actions CI pipeline to auto-build and push images
+- [ ] Kustomize overlays for dev/staging/prod
+- [ ] Horizontal Pod Autoscaler based on custom metrics
+- [ ] HTTPS via ACM + external-dns
+- [ ] Loki for log aggregation alongside Prometheus metrics
+- [ ] Slack webhook for alert notifications
+- [ ] Thanos or Cortex for long-term metric storage
