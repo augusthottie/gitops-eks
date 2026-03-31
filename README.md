@@ -1,6 +1,6 @@
 # GitOps on EKS with ArgoCD, Helm, and Full Observability
 
-A GitOps-driven Kubernetes deployment on Amazon EKS with a complete observability stack. Push to `main` and ArgoCD automatically syncs everything, the application, the monitoring stack, custom dashboards, and alerting rules. Git is the single source of truth.
+A GitOps-driven Kubernetes deployment on Amazon EKS with a complete observability stack, metrics, logs, dashboards, and alerting. Push to `main` and ArgoCD automatically syncs everything. Git is the single source of truth.
 
 ![Architecture](./docs/architecture.png)
 
@@ -12,9 +12,11 @@ A GitOps-driven Kubernetes deployment on Amazon EKS with a complete observabilit
 - **Kubernetes-native databases**: PostgreSQL (StatefulSet + PVC) and Redis running as pods
 - **AWS integrations**: Load Balancer Controller (ALB from Ingress), EBS CSI Driver, ECR, IRSA
 - **Application instrumentation**: Custom Prometheus metrics (counters, histograms, gauges)
-- **Grafana dashboards**: 9-panel dashboard covering HTTP, database, cache, and infrastructure metrics
+- **Metrics dashboards**: 9-panel Grafana dashboard covering HTTP, database, cache, and infrastructure metrics
+- **Log aggregation**: Loki + Promtail collecting container logs, queryable via LogQL
+- **Metric-to-log correlation**: Combined dashboard with metrics and logs side by side — click a spike, see the logs
 - **Custom alerting**: 9 PrometheusRule alerts for API health, database performance, cache efficiency, and pod stability
-- **Monitoring as code**: Full kube-prometheus-stack deployed and managed via GitOps
+- **Monitoring as code**: Full observability stack (Prometheus, Grafana, Loki, Promtail, Alertmanager) deployed via GitOps
 
 ## Architecture
 
@@ -24,7 +26,7 @@ Developer → git push → GitHub repo
                        ArgoCD (auto-sync + self-heal)
                           ↓ (helm sync)
 ┌──────────────────────────────────────────────────────────┐
-│  EKS Cluster (2x t3.medium managed nodes)                │
+│  EKS Cluster (3x t3.medium managed nodes)                │
 │                                                          │
 │  ┌── namespace: three-tier ───────────────────────────┐  │
 │  │  Ingress (ALB) → gitops-api (2 replicas, /metrics) │  │
@@ -38,7 +40,14 @@ Developer → git push → GitHub repo
 │  │      │       ──scrapes──→ kube-state-metrics        │  │
 │  │      ↓                                              │  │
 │  │  Alertmanager → Email notifications                 │  │
-│  │  Grafana (9-panel custom dashboard)                 │  │
+│  │                                                     │  │
+│  │  Promtail (DaemonSet) → tails /var/log/pods         │  │
+│  │      ↓                                              │  │
+│  │  Loki → stores & indexes logs                       │  │
+│  │                                                     │  │
+│  │  Grafana (2 custom dashboards)                      │  │
+│  │    • GitOps API Dashboard (9 metric panels)         │  │
+│  │    • Logs & Metrics Correlation (7 panels)          │  │
 │  └─────────────────────────────────────────────────────┘  │
 │                                                          │
 │  ┌── namespace: argocd ──────────────────────────────┐   │
@@ -58,10 +67,11 @@ Users → HTTP :80 → ALB → gitops-api pods :3000
 4. ArgoCD syncs the diff to the EKS cluster
 5. Kubernetes rolls out updated pods with zero downtime
 
-Three ArgoCD applications manage the entire stack:
-- `three-tier-app`: the application (Helm chart)
-- `monitoring-stack`: kube-prometheus-stack (Helm chart from upstream)
-- `monitoring-custom`: custom alerts and Grafana dashboards (raw manifests)
+Four ArgoCD applications manage the entire stack:
+- `three-tier-app` — the application (Helm chart)
+- `monitoring-stack` — kube-prometheus-stack (Helm chart from upstream)
+- `loki-stack` — Loki + Promtail (Helm chart from upstream)
+- `monitoring-custom` — custom alerts and Grafana dashboards (raw manifests)
 
 ## Tech Stack
 
@@ -76,7 +86,8 @@ Three ArgoCD applications manage the entire stack:
 | Database | PostgreSQL 16 | StatefulSet with 1Gi EBS PVC |
 | Cache | Redis 7 | Deployment with LRU eviction |
 | Metrics | Prometheus + prom-client | ServiceMonitor, 7 custom metrics |
-| Dashboards | Grafana | 9-panel custom dashboard |
+| Logs | Loki + Promtail | DaemonSet log collection, LogQL queries |
+| Dashboards | Grafana | 9-panel metrics + 7-panel logs dashboard |
 | Alerting | Alertmanager + PrometheusRules | 9 custom alerts |
 | Node metrics | Node Exporter | CPU, memory, disk, network |
 | K8s metrics | kube-state-metrics | Pod status, deployments, replicas |
@@ -102,6 +113,40 @@ Three ArgoCD applications manage the entire stack:
 | DB Active Connections | Gauge per pod (0-10 scale) |
 | DB Queries/s | Insert and select operations per second |
 | Pod Memory + CPU | Resource usage per pod and container |
+
+## Logs & Metrics Correlation Dashboard
+
+![Logs Dashboard](./docs/logs-dashboard.png)
+
+7 panels combining Prometheus metrics with Loki logs:
+
+| Panel | Datasource | What It Shows |
+|-------|-----------|---------------|
+| API Request Rate | Prometheus | Requests per second by route |
+| API Error Rate | Prometheus | Percentage of 5xx responses |
+| API Logs | Loki | Live log stream from gitops-api containers |
+| PostgreSQL Logs | Loki | Database checkpoint, connection, and startup logs |
+| Redis Logs | Loki | Cache operations and background save logs |
+| Error Logs | Loki | Filtered for error/fail/panic/crash across all containers |
+| Log Volume | Loki | Lines per second per container |
+
+**The workflow**: See a spike in the metrics panels at the top → drag to select that time range → log panels below update to show logs from that exact window → root cause in under 2 minutes.
+
+## LogQL Queries
+
+```
+# All logs from the app namespace
+{namespace="three-tier"}
+
+# Just API container logs
+{namespace="three-tier", container="gitops-api"}
+
+# Filter for errors
+{namespace="three-tier"} |~ "(?i)(error|fail|panic|crash|exception)"
+
+# Log volume as a metric (lines/sec)
+sum(rate({namespace="three-tier"}[5m])) by (container)
+```
 
 ## Custom Metrics
 
@@ -156,13 +201,16 @@ The API exposes `/metrics` scraped by Prometheus every 15 seconds via ServiceMon
 │           └── redis.yaml        # Deployment + Service
 ├── monitoring/
 │   ├── servicemonitor.yaml                    # Prometheus ServiceMonitor
+│   ├── loki-datasource.yaml                   # Loki datasource for Grafana
 │   ├── alerts/
 │   │   └── gitops-api-alerts.yaml             # 9 PrometheusRule alerts
 │   └── dashboards/
-│       └── grafana-dashboard-configmap.yaml    # 9-panel dashboard as ConfigMap
+│       ├── grafana-dashboard-configmap.yaml    # 9-panel metrics dashboard
+│       └── logs-dashboard-configmap.yaml       # 7-panel logs correlation dashboard
 ├── argocd/
 │   ├── application.yaml          # Three-tier app
 │   ├── monitoring-stack.yaml     # kube-prometheus-stack
+│   ├── loki-stack.yaml           # Loki + Promtail
 │   └── monitoring-custom.yaml    # Custom alerts + dashboards
 ├── terraform/
 │   ├── main.tf
@@ -253,6 +301,7 @@ docker push $(cd ../terraform && terraform output -raw ecr_repository_url):lates
 ```bash
 kubectl apply -f argocd/application.yaml
 kubectl apply -f argocd/monitoring-stack.yaml
+kubectl apply -f argocd/loki-stack.yaml
 kubectl apply -f argocd/monitoring-custom.yaml
 ```
 
@@ -275,54 +324,15 @@ kubectl port-forward svc/argocd-server -n argocd 8080:443
 ### Tear Down
 
 ```bash
-kubectl delete application monitoring-custom monitoring-stack three-tier-app -n argocd
+kubectl delete application monitoring-custom monitoring-stack loki-stack three-tier-app -n argocd
 cd terraform/ && terraform destroy
-```
-
-## Troubleshooting Tear Down
-
-`terraform destroy` often fails because Kubernetes-created resources (ALBs, security groups, ENIs) still exist in the VPC. Terraform didn't create them so it can't delete them, but they block VPC deletion.
-
-**Fix: delete Kubernetes resources first, then destroy infrastructure.**
-```bash
-# Delete ArgoCD apps (this removes ALBs, services, pods)
-kubectl delete application monitoring-custom monitoring-stack three-tier-app -n argocd
-
-# Wait 2 minutes for resources to terminate, then destroy
-terraform destroy
-```
-
-**If the cluster is already gone** and `kubectl` can't connect:
-```bash
-# Find and delete leftover ALBs
-aws elbv2 describe-load-balancers \
-  --query "LoadBalancers[?VpcId=='YOUR_VPC_ID'].LoadBalancerArn" --output text
-
-# Delete each one individually
-aws elbv2 delete-load-balancer --load-balancer-arn "ARN_HERE"
-
-# Wait 90 seconds, then delete orphaned security groups
-aws ec2 describe-security-groups \
-  --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
-  --query "SecurityGroups[?GroupName!='default'].GroupId" --output text | \
-  xargs -n1 aws ec2 delete-security-group --group-id
-
-# Retry
-terraform destroy
-```
-
-**If the VPC still won't delete**, check for lingering ENIs:
-```bash
-aws ec2 describe-network-interfaces \
-  --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
-  --query "NetworkInterfaces[*].{ID:NetworkInterfaceId,Status:Status}" --output table
 ```
 
 ## Lessons Learned
 
 **ServiceMonitor > additionalScrapeConfigs.** The Prometheus operator manages config through CRDs. A ServiceMonitor with label selectors is the Kubernetes-native approach and works immediately. Raw scrape configs were unreliable.
 
-**Services need named ports for ServiceMonitor.** `port: 80` isn't enough, you need `name: http, port: 80`. The ServiceMonitor references ports by name, and without it Prometheus silently ignores the target.
+**Services need named ports for ServiceMonitor.** `port: 80` isn't enough — you need `name: http, port: 80`. The ServiceMonitor references ports by name, and without it Prometheus silently ignores the target.
 
 **EBS CSI Driver OIDC must match the current cluster.** Destroying and recreating an EKS cluster changes the OIDC provider URL. IAM roles from the old cluster fail with `Not authorized to perform sts:AssumeRoleWithWebIdentity`. Delete and recreate the IAM service account.
 
@@ -334,27 +344,24 @@ aws ec2 describe-network-interfaces \
 
 **ConfigMap changes don't restart pods.** Add a checksum annotation to the deployment template so pods roll out automatically when config changes.
 
+**t3.medium has a pod limit of ~17.** A full observability stack (Prometheus, Grafana, Alertmanager, Node Exporter, kube-state-metrics, Loki, Promtail) plus the app, ArgoCD, cert-manager, and LB controller can exhaust two nodes. Scale to 3 nodes when running the full stack.
+
+**Grafana sidecar provisioning can be unreliable.** If datasources or dashboards aren't picked up after restarts, add them manually through the UI. The dashboards are what matter, not how the datasource was configured.
+
+**Dashboard JSON imports can corrupt quotes.** Curly/smart quotes break PromQL and LogQL queries silently. Always type queries manually in the panel editor rather than relying on imported JSON.
+
 ## Cost Considerations
 
 | Resource | Estimated Monthly Cost |
 |----------|----------------------|
 | EKS Control Plane | $73 |
-| 2x t3.medium nodes | $60 |
+| 3x t3.medium nodes | $90 |
 | NAT Gateway | $32 |
 | ALB (via Ingress) | $16 |
 | Prometheus EBS (10Gi) | $1 |
+| Loki EBS (10Gi) | $1 |
 | Postgres EBS (1Gi) | $0.10 |
 | Monitoring pods | Minimal (existing nodes) |
-| **Total** | **~$182/month** |
+| **Total** | **~$213/month** |
 
 Use `terraform destroy` when not actively working.
-
-## Future Improvements
-
-- [ ] GitHub Actions CI pipeline to auto-build and push images
-- [ ] Kustomize overlays for dev/staging/prod
-- [ ] Horizontal Pod Autoscaler based on custom metrics
-- [ ] HTTPS via ACM + external-dns
-- [ ] Loki for log aggregation alongside Prometheus metrics
-- [ ] Slack webhook for alert notifications
-- [ ] Thanos or Cortex for long-term metric storage
